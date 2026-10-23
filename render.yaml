@@ -1,0 +1,23 @@
+# Render Blueprint — New → Blueprint → select this repo.
+services:
+  - type: web
+    name: state-portal
+    runtime: node
+    plan: free
+    region: frankfurt
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /healthz
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: NODE_VERSION
+        value: "20"
+      - key: DATABASE_URL     # Postgres (Neon / Render Postgres). Without it SQLite is used and data is lost on redeploy!
+        sync: false
+      - key: ADMIN_LOGIN      # first portal admin (created once on start)
+        sync: false
+      - key: ADMIN_PASSWORD
+        sync: false
+      - key: SEED_DEMO        # "0" = do not create [Приклад] demo data
+        value: "1"
