@@ -65,7 +65,7 @@ app.post('/api/login', lim, H(async (q, r) => {
 // --- вхід через гру: фракція гри -> фракція порталу (FACTION_MAP="sbu:sbu,police:npu,...") ---
 const FMAP = Object.fromEntries((process.env.FACTION_MAP || 'sbu:sbu,police:npu,county:obl,gov:gov,army:zsu,tsn:tsn,lsmc:moz,pbmc:moz,dsns:dsns').split(',').map(s => s.split(':').map(x => x.trim())));
 const fidOf = code => { const c = FMAP[code]; return c ? (Object.values(F).find(f => f.code === c) || {}).id : undefined; };
-nova.mount(app, lim, H, { deny: 'Доступ лише для працівників державних структур. Вступіть до держ. фракції в грі — і доступ з\'явиться автоматично.',
+nova.mount(app, lim, H, { db, deny: 'Доступ лише для працівників державних структур. Вступіть до держ. фракції в грі — і доступ з\'явиться автоматично.',
   eligible: c => c.faction_type === 'state' && !!fidOf(c.faction),
   startSession,
   async upsert(acc, c, admin) {
@@ -220,4 +220,4 @@ async function seed() {
   await db.run('INSERT INTO complaints(faction_id,name,contact,body,demo,created_at) VALUES(?,?,?,?,1,?)', [byCode('npu'), '[Приклад] Громадянин', 'Discord: citizen', 'Патрульний не представився під час зупинки.', now()]);
   await db.run('INSERT INTO appointments(faction_id,name,contact,topic,demo,created_at) VALUES(?,?,?,?,1,?)', [byCode('gov'), '[Приклад] Петро', 'тел. 555-0101', 'Питання щодо ліцензії на бізнес', now()]);
 }
-(async () => { await db.init(SCHEMA, 'state.db'); await seed(); const port = process.env.PORT || 3100; app.listen(port, () => console.log('Державний портал: http://localhost:' + port)); })();
+(async () => { await db.init(SCHEMA, 'state.db'); await seed(); await nova.start(db); const port = process.env.PORT || 3100; app.listen(port, () => console.log('Державний портал: http://localhost:' + port)); })();
