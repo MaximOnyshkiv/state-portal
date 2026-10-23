@@ -25,7 +25,7 @@ async function verify(login, password, ip) {
 const URL_RE = /^https:\/\/[a-z0-9-]+\.(lhr\.life|localhost\.run|trycloudflare\.com)$/;
 async function loadUrl(db) { try { const r = await db.get("SELECT v FROM kv WHERE k='nova_url'"); if (r && !process.env.NOVA_AUTH_URL_FIXED) URL_ = r.v; } catch {} }
 function mount(app, lim, H, opts) {
-  const db = opts.db;
+  const db = opts.db; mountSso(app, lim, H, opts);
   app.post('/api/internal/nova-url', lim, H(async (q, r) => {
     const { url, ts, sig } = q.body || {}; if (!SECRET || !URL_RE.test(String(url)) || Math.abs(Date.now() - +ts) > 300e3) return r.status(400).json({ error: 'bad' });
     const e = crypto.createHmac('sha256', SECRET).update(url + '|' + ts).digest('hex');
@@ -50,5 +50,36 @@ function mount(app, lim, H, opts) {
     await opts.startSession(r, await opts.upsert(t.acc, c, t.admin)); r.json({ ok: 1 });
   }));
 }
-async function start(db) { await db.run('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)'); await loadUrl(db); }
-module.exports = { mount, start, enabled, localAllowed };
+// ===== SSO з гри (F9-планшет / телефон → «Портал»). Специфікація: portal_sso_spec.md =====
+const SSO_SECRET = process.env.NOVA_SSO_SECRET || '';
+const SSO_AUD = process.env.NOVA_SSO_AUD || '';
+function ssoVerify(t) {
+  const [p, s] = String(t || '').split('.'); if (!SSO_SECRET || !p || !s || p.length > 4096) return null;
+  const e = crypto.createHmac('sha256', SSO_SECRET).update(p).digest('base64url');
+  if (e.length !== s.length || !crypto.timingSafeEqual(Buffer.from(e), Buffer.from(s))) return null;
+  let o; try { o = JSON.parse(Buffer.from(p, 'base64url')); } catch { return null; }
+  const now = Math.floor(Date.now() / 1000);
+  if (o.v !== 1 || !o.jti || !(o.exp > now) || o.exp - o.iat > 120 || o.iat > now + 30) return null;
+  if (SSO_AUD && o.aud !== SSO_AUD) return null;
+  if (!o.acc || !Number.isInteger(o.acc.id) || !o.char_id && !(o.acc.admin_level >= ADMIN_LVL)) return null;
+  return o;
+}
+function mountSso(app, lim, H, opts) {
+  const db = opts.db;
+  app.get('/sso', lim, H(async (q, r) => {
+    r.set('Referrer-Policy', 'no-referrer'); r.set('Cache-Control', 'no-store');
+    const fail = m => r.status(403).type('html').send(`<!doctype html><meta charset=utf-8><body style="font-family:sans-serif;background:#111;color:#eee;padding:40px"><h2>Вхід не вдався</h2><p>${m}</p><p><a style="color:#8cf" href="/">На головну</a></p>`);
+    const o = ssoVerify(q.query.t); if (!o) return fail('Посилання недійсне або застаріло. Відкрийте портал у грі ще раз.');
+    await db.run('DELETE FROM sso_used WHERE exp < ?', [Math.floor(Date.now() / 1000)]);
+    try { await db.run('INSERT INTO sso_used(jti, exp) VALUES(?,?)', [String(o.jti).slice(0, 64), o.exp]); } catch { return fail('Посилання вже використано.'); }
+    if (o.acc.banned) return fail('Ваш ігровий акаунт заблоковано.');
+    const admin = o.acc.admin_level >= ADMIN_LVL, c = o.char || null;
+    if (c && c.id !== o.char_id) return fail('Невірні дані персонажа.');
+    const ok = c && opts.eligible(c);
+    if (!ok && !admin) return fail(opts.deny);
+    await opts.startSession(r, await opts.upsert({ id: o.acc.id, login: o.acc.login, admin_level: o.acc.admin_level }, ok ? c : null, admin));
+    r.redirect(302, '/');
+  }));
+}
+async function start(db) { await db.run('CREATE TABLE IF NOT EXISTS kv(k TEXT PRIMARY KEY, v TEXT)'); await loadUrl(db); await db.run('CREATE TABLE IF NOT EXISTS sso_used(jti TEXT PRIMARY KEY, exp INTEGER)'); }
+module.exports = { ssoVerify, mount, start, enabled, localAllowed };
