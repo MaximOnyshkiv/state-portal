@@ -19,7 +19,7 @@ async function init(schemaFn, dbName) {
 async function all(sql, p = []) { if (PG) return (await pool.query(conv(sql), p)).rows; return sdb.prepare(sql).all(...p); }
 async function get(sql, p = []) { return (await all(sql, p))[0]; }
 async function run(sql, p = []) {
-  if (PG) { const r = await pool.query(conv(sql) + (/^\s*insert/i.test(sql) && !/returning/i.test(sql) && !/into\s+sessions/i.test(sql) ? ' RETURNING id' : ''), p); return { changes: r.rowCount, id: r.rows[0] && r.rows[0].id }; }
+  if (PG) { const r = await pool.query(conv(sql) + (/^\s*insert/i.test(sql) && !/returning/i.test(sql) && !/into\s+(sessions|kv|sso_used)\b/i.test(sql) ? ' RETURNING id' : ''), p); return { changes: r.rowCount, id: r.rows[0] && r.rows[0].id }; }
   const r = sdb.prepare(sql).run(...p); return { changes: r.changes, id: Number(r.lastInsertRowid) };
 }
 module.exports = { init, all, get, run, isPg: PG };
