@@ -1,7 +1,7 @@
 // Державний портал — єдина система для державних фракцій.
 const express = require('express'), helmet = require('helmet'), cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit'), bcrypt = require('bcryptjs'), crypto = require('crypto'), path = require('path');
-const db = require('./db');
+const db = require('./db'), nova = require('./nova');
 const now = () => Date.now();
 const DEFAULT_FACTIONS = (process.env.FACTIONS || 'gov:Уряд:Кабінет Міністрів та Мерія,gov:СБУ:Служба безпеки України,npu:НПУ:Національна поліція,obl:Обласна поліція:Поліція області,zsu:ЗСУ:Збройні сили,moz:МОЗ:Міністерство охорони здоров\'я,dsns:ДСНС:Служба надзвичайних ситуацій,tsn:ТСН:Державне телебачення,fib:FIB:Федеральне бюро розслідувань')
   .split(',').map((s, i) => { const [k, name, descr] = s.split(':'); return { code: k === 'gov' ? (name === 'Уряд' ? 'gov' : 'sbu') : k, name, descr, overseer: k === 'gov' ? 1 : 0, sort: i }; });
@@ -52,13 +52,29 @@ const pub = u => u && ({ id: u.id, login: u.login, name: u.name, static_id: u.st
 
 // --- auth ---
 const lim = rateLimit({ windowMs: 10 * 60e3, max: 30 });
+async function startSession(r, uid) { const t = crypto.randomBytes(32).toString('hex');
+  await db.run('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)', [sha(t), uid, now() + 14 * 864e5]);
+  r.cookie('sp', t, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 14 * 864e5 }); }
 app.post('/api/login', lim, H(async (q, r) => {
-  const u = await db.get("SELECT * FROM users WHERE login=? AND status='active'", [String(q.body.login || '').trim().toLowerCase()]);
-  if (!u || !bcrypt.compareSync(String(q.body.password || ''), u.pass_hash)) return r.status(401).json({ error: 'Невірний логін або пароль' });
-  const t = crypto.randomBytes(32).toString('hex');
-  await db.run('INSERT INTO sessions(token_hash,user_id,expires_at) VALUES(?,?,?)', [sha(t), u.id, now() + 14 * 864e5]);
-  r.cookie('sp', t, { httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', maxAge: 14 * 864e5 }); r.json({ ok: 1 });
+  const login = String(q.body.login || '').trim().toLowerCase();
+  if (!nova.localAllowed() && login !== String(process.env.ADMIN_LOGIN || '').toLowerCase()) return r.status(400).json({ error: 'Увійдіть через ігровий акаунт NovaRP' });
+  const u = await db.get("SELECT * FROM users WHERE login=? AND status='active'", [login]);
+  if (!u || u.pass_hash === '!nova' || !bcrypt.compareSync(String(q.body.password || ''), u.pass_hash)) return r.status(401).json({ error: 'Невірний логін або пароль' });
+  await startSession(r, u.id); r.json({ ok: 1 });
 }));
+// --- вхід через гру: фракція гри -> фракція порталу (FACTION_MAP="sbu:sbu,police:npu,...") ---
+const FMAP = Object.fromEntries((process.env.FACTION_MAP || 'sbu:sbu,police:npu,county:obl,gov:gov,army:zsu,tsn:tsn,lsmc:moz,pbmc:moz,dsns:dsns').split(',').map(s => s.split(':').map(x => x.trim())));
+const fidOf = code => { const c = FMAP[code]; return c ? (Object.values(F).find(f => f.code === c) || {}).id : undefined; };
+nova.mount(app, lim, H, { deny: 'Доступ лише для працівників державних структур. Вступіть до держ. фракції в грі — і доступ з\'явиться автоматично.',
+  eligible: c => c.faction_type === 'state' && !!fidOf(c.faction),
+  startSession,
+  async upsert(acc, c, admin) {
+    const login = c ? 'nova#' + c.id : 'nova#a' + acc.id, fid = c ? fidOf(c.faction) : (Object.values(F).find(f => f.code === 'gov') || Object.values(F)[0]).id;
+    const rank = c ? Math.max(1, Math.min(12, c.rank || 1)) : 12, role = admin ? 'admin' : (c && c.rank >= 10 ? 'leader' : 'member'), name = c ? c.name : acc.login + ' (адмін)';
+    const ex = await db.get('SELECT id FROM users WHERE login=?', [login]);
+    if (ex) await db.run("UPDATE users SET name=?,static_id=?,faction_id=?,rank=?,role=?,status='active' WHERE id=?", [name, String(c ? c.id : ''), fid, rank, role, ex.id]);
+    const id = ex ? ex.id : (await db.run("INSERT INTO users(login,pass_hash,name,static_id,faction_id,rank,role,created_at) VALUES(?,'!nova',?,?,?,?,?,?)", [login, name, String(c ? c.id : ''), fid, rank, role, now()])).id;
+    await audit(id, 'login.game', `${acc.login} → ${name}, ${F[fid].name}, ранг ${rank}${admin ? ', адмін рівня ' + acc.admin_level : ''}`); return id; } });
 app.post('/api/logout', H(async (q, r) => { if (q.cookies.sp) await db.run('DELETE FROM sessions WHERE token_hash=?', [sha(q.cookies.sp)]); r.clearCookie('sp'); r.json({ ok: 1 }); }));
 app.get('/api/me', (q, r) => r.json({ user: pub(q.u), overseer: !!isOverseer(q.u), overseerView: !!(q.u && F[q.u.faction_id] && F[q.u.faction_id].overseer), admin: isAdmin(q.u),
   leader: !!(q.u && isLeaderOf(q.u, q.u.faction_id)), factions: Object.values(F).map(f => ({ id: f.id, code: f.code, name: f.name, descr: f.descr, overseer: f.overseer, ranks: f.ranks })) }));

@@ -37,10 +37,18 @@ async function pagePublic() {
   $('#fc').onsubmit = async e => { e.preventDefault(); try { const r = await api('/api/public/complaint', form(e.target)); e.target.reset(); toast('Прийнято, номер ' + r.no); } catch (x) { toast(x.message); } };
   $('#fa').onsubmit = async e => { e.preventDefault(); try { const r = await api('/api/public/appointment', form(e.target)); e.target.reset(); toast('Записано, номер ' + r.no); } catch (x) { toast(x.message); } };
 }
-function pageLogin() {
-  app.innerHTML = `<form class="card login" id="lf"><div class="veb">Кабінет службовця</div><h1 class="vh" style="font-size:28px">Вхід</h1><label>Логін</label><input name="login" autocomplete="username"><label>Пароль</label><input name="password" type="password" autocomplete="current-password"><button class="btn" style="width:100%">Увійти</button>
-  <div class="hint">Акаунти видає керівник фракції (вкладка «Склад»). Демо: demo_gov, demo_sbu, demo_npu_lead, demo_npu, demo_admin — пароль demo1234.</div></form>`;
-  $('#lf').onsubmit = async e => { e.preventDefault(); try { await api('/api/login', form(e.target)); await boot(); location.hash = '#/f/' + ME.user.faction_id; } catch (x) { toast(x.message); } };
+async function pageLogin() {
+  let m = { nova: false, local: true }; try { m = await (await fetch('/api/auth/mode')).json(); } catch {}
+  const done = async () => { await boot(); location.hash = '#/f/' + ME.user.faction_id; };
+  const game = `<form class="card login" id="gf"><div class="veb">Кабінет службовця</div><h1 class="vh" style="font-size:28px">Вхід через NovaRP</h1><label>Ігровий логін</label><input name="login" autocomplete="username" required><label>Пароль від гри</label><input name="password" type="password" autocomplete="current-password" required><button class="btn" style="width:100%">Увійти</button><div class="hint">Доступ і ранг підтягуються з гри автоматично при кожному вході.</div></form>`;
+  const local = `<form class="card login" id="lf" ${m.nova ? 'style="margin-top:18px"' : ''}><div class="veb">${m.nova ? 'Службовий вхід' : 'Кабінет службовця'}</div><h1 class="vh" style="font-size:${m.nova ? 20 : 28}px">${m.nova ? 'Локальний акаунт' : 'Вхід'}</h1><label>Логін</label><input name="login" autocomplete="username"><label>Пароль</label><input name="password" type="password"><button class="btn ${m.nova ? 'gh' : ''}" style="width:100%">Увійти</button>${m.nova ? '' : '<div class="hint">Демо: demo_gov, demo_sbu, demo_npu_lead, demo_npu, demo_admin — пароль demo1234.</div>'}</form>`;
+  app.innerHTML = (m.nova ? game : '') + (m.local || !m.nova ? local : `<details style="max-width:420px;margin:14px auto"><summary class="meta">Службовий вхід</summary>${local}</details>`);
+  $('#lf').onsubmit = async e => { e.preventDefault(); try { await api('/api/login', form(e.target)); await done(); } catch (x) { toast(x.message); } };
+  if (m.nova) $('#gf').onsubmit = async e => { e.preventDefault(); try { const r = await api('/api/login/game', form(e.target));
+    if (!r.choose) return await done();
+    app.innerHTML = `<div class="card login"><div class="veb">Кілька персонажів</div><h1 class="vh" style="font-size:24px">Оберіть персонажа</h1>${r.choose.map(c => `<button class="btn gh" style="width:100%;margin:6px 0" data-id="${c.id}">${esc(c.name)} · ${esc(c.faction)} · ранг ${c.rank}</button>`).join('')}</div>`;
+    app.querySelectorAll('[data-id]').forEach(b => b.onclick = async () => { try { await api('/api/login/char', { ticket: r.ticket, char_id: +b.dataset.id }); await done(); } catch (x) { toast(x.message); pageLogin(); } });
+  } catch (x) { toast(x.message); } };
 }
 let ftab = 'roster';
 async function pageFaction(fid) {

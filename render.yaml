@@ -20,4 +20,10 @@ services:
       - key: ADMIN_PASSWORD
         sync: false
       - key: SEED_DEMO        # "0" = do not create [Приклад] demo data
-        value: "1"
+        value: "0"
+      - key: NOVA_AUTH_URL    # https URL of nova-auth on the game PC (Cloudflare Tunnel)
+        sync: false
+      - key: NOVA_AUTH_SECRET # same as AUTH_SECRET in nova-auth .env
+        sync: false
+      - key: AUTH_MODE        # nova = only game login (+ADMIN_LOGIN), both = game + local, local = no game login
+        value: nova
