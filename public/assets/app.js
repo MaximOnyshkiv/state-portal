@@ -11,13 +11,10 @@ const rankName = (fid, r) => (FN[fid] && FN[fid].ranks[r - 1]) || ('Ранг ' +
 const roleTag = u => u.role === 'admin' ? '<span class="tag y">Адмін</span>' : u.role === 'leader' ? '<span class="tag y">Лідер</span>' : '<span class="tag">Співробітник</span>';
 const fopts = (sel, excl) => Object.values(FN).filter(f => f.id !== excl).map(f => `<option value="${f.id}" ${f.id == sel ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
 
-function banner() { let b = $('#impbar'); if (!ME.imp) { if (b) b.remove(); return; }
-  if (!b) { b = document.createElement('div'); b.id = 'impbar'; b.style.cssText = 'position:sticky;top:0;z-index:99;background:#b3261e;color:#fff;padding:8px 16px;font-weight:700;text-align:center'; document.body.prepend(b); }
-  b.innerHTML = `РЕЖИМ АДМІНА · перегляд як ${esc(fname(ME.imp.faction_id))}, ранг ${ME.imp.rank} · лише читання · до ${new Date(ME.imp.until).toLocaleTimeString('uk-UA', { timeStyle: 'short' })} <button class="btn sm" onclick="impStop()">Завершити</button>`; }
-async function impStop() { try { await api('/api/admin/impersonate/stop', {}); } catch (x) { toast(x.message); } await boot(); location.hash = '#/admin'; route(); }
+function banner() {}
 function chrome() {
   const u = ME.user, h = location.hash; banner();
-  if (ME.adminAcc && !ME.imp) { $('#links').innerHTML = `<a href="#/">Громадянам</a><a class="acc" href="#/admin">Адмін-панель</a>`; $('#ws').hidden = false;
+  if (ME.adminAcc) { $('#links').innerHTML = `<a href="#/">Громадянам</a><a class="acc" href="#/admin">Адмін-панель</a>`; $('#ws').hidden = false;
     $('#wsin').innerHTML = `<span class="eb">Адмін-панель порталу</span><a href="#/admin" class="on">Модерація і журнали</a><span class="who">${esc(ME.adminAcc.name)} · адмін ${ME.adminAcc.level} <button class="btn gh sm" onclick="logout()">Вийти</button></span>`; return; }
   $('#links').innerHTML = `<a href="#/" class="${h === '#/' || !h ? 'on' : ''}">Громадянам</a><a href="#/#wanted">Розшук</a><a href="#/#appeal">Звернення</a>` + (u ? `<a class="acc" href="#/f/${u.faction_id}">Кабінет</a>` : `<a class="acc" href="#/login">Вхід для службовців</a>`);
   $('#ws').hidden = !u; if (!u) return;
@@ -99,24 +96,27 @@ async function pageOversight() {
    <div class="grid g3" style="margin-top:22px">${d.factions.map(f => `<a class="card" href="#/f/${f.id}"><h4>${esc(f.name)}</h4><div class="meta">${f.members} співробітників</div><div style="margin-top:10px"><span class="tag ${f.complaints ? 'secret' : ''}">Нові скарги: ${f.complaints}</span> <span class="tag b">Запити: ${f.requests}</span></div></a>`).join('')}</div>
    <div class="card" style="margin-top:18px"><h3>Журнал кадрових рішень</h3>${d.log.map(a => `<div class="it"><span class="tag ${a.action === 'member.fire' ? 'secret' : 'y'}">${{ 'member.fire': 'Звільнення', 'member.hire': 'Прийом', 'member.rank': 'Ранг' }[a.action]}</span> ${esc(a.details)}<div class="meta">${esc(a.who || '')} · ${dt(a.created_at)}</div></div>`).join('') || '<div class="meta">Порожньо</div>'}</div>`;
 }
+const MOD = { abuse: '<span class="tag secret">зловживання</span>', valid: '<span class="tag ok">обґрунтована</span>', closed: '<span class="tag">закрита</span>' };
+async function admView(kind, id) { const reason = prompt('Причина перегляду (№ репорту). Перегляд пишеться в журнал:'); if (!reason) return;
+  try { const v = await api(`/api/admin/view?kind=${kind}&id=${id}&reason=${encodeURIComponent(reason)}`); $('#avw').innerHTML = `<h3>Перегляд (лише читання): ${kind} #${id}</h3><pre style="white-space:pre-wrap;max-height:420px;overflow:auto">${esc(JSON.stringify(v.data, null, 2))}</pre>`; } catch (x) { toast(x.message); } }
+async function admMod(id, st) { const note = prompt('Примітка до рішення (обовʼязково):'); if (!note) return; try { await api('/api/admin/moderate', { id, mod_status: st, note }); toast('Збережено'); pageAdmin(); } catch (x) { toast(x.message); } }
 async function pageAdmin() {
-  const d = await api('/api/admin'), END = { manual: 'вручну', timeout: 'тайм-аут', logout: 'вихід' };
-  app.innerHTML = `<div class="veb">Адміністрування · без RP-ролі</div><h1 class="vh">Адмін-панель порталу</h1>
-  <p class="sub">Адмін не є учасником фракцій. Перегляд «як роль» — лише для перевірки й налагодження: тільки читання, ${15} хв, кожен вхід і вихід пишеться в журнал.${ME.readOnly ? ' Веб-портал зараз у режимі лише читання.' : ''}</p>
-  <div class="grid g3" style="margin-top:18px"><div class="card"><h4>Співробітників</h4><b>${d.stats.users}</b></div><div class="card"><h4>Нових скарг</h4><b>${d.stats.complaints}</b></div><div class="card"><h4>Нових запитів</h4><b>${d.stats.requests}</b></div></div>
-  <div class="grid g2" style="margin-top:18px"><form class="card" id="imf"><h3>Переглянути як роль</h3><label>Фракція</label><select name="faction_id" id="imfac">${fopts()}</select><label>Ранг</label><select name="rank" id="imrank"></select><label>Причина (обов'язково)</label><input name="reason" required minlength="5" placeholder="напр. скарга №…, перевірка бага"><button class="btn red">Почати перегляд</button></form>
-  <div class="card"><h3>Журнал переглядів «як роль»</h3><div style="max-height:420px;overflow:auto"><table><tr><th>Адмін</th><th>Роль</th><th>Причина</th><th>Початок</th><th>Кінець</th></tr>${d.impersonations.map(i => `<tr><td>${esc(i.admin_name)}</td><td>${esc(fname(i.faction_id))}, ${i.rank}</td><td>${esc(i.reason)}</td><td>${dt(i.started_at)}</td><td>${i.ended_at ? dt(i.ended_at) + ' · ' + (END[i.end_reason] || esc(i.end_reason)) : '<span class="tag secret">триває</span>'}</td></tr>`).join('') || '<tr><td colspan=5 class="meta">Порожньо</td></tr>'}</table></div></div></div>
-  <div class="card" style="margin-top:18px"><h3>Користувачі · ${d.users.length}</h3><table><tr><th>Користувач</th><th>Фракція</th><th>Ранг</th><th>Роль</th><th>Статус</th></tr>${d.users.map(u => `<tr><td><b>${esc(u.name)}</b><div class="meta">${esc(u.login)}</div></td><td>${esc(fname(u.faction_id))}</td><td>${u.rank}</td><td>${esc(u.role)}</td><td>${esc(u.status)}</td></tr>`).join('')}</table><div class="hint">Фракція й ранг підтягуються з гри; змінювати їх тут не можна.</div></div>
+  const d = await api('/api/admin');
+  app.innerHTML = `<div class="veb">Технічна панель · без RP-ролі</div><h1 class="vh">Адмін-панель порталу</h1>
+  <p class="sub">Адмін не є учасником фракцій і не виконує RP-дій. Тут — модерація скарг і зловживань та журнали. Перегляд даних для розбору репорту — лише читання, з причиною, кожен перегляд пишеться в журнал.</p>
+  <div class="grid g3" style="margin-top:18px"><div class="card"><h4>Гравців</h4><b>${d.stats.users}</b></div><div class="card"><h4>Нових скарг</h4><b>${d.stats.complaints}</b></div><div class="card"><h4>Позначено зловживань</h4><b>${d.stats.abuse}</b></div></div>
+  <div class="card" id="avw" style="margin-top:18px"><div class="hint">Оберіть скаргу або гравця й натисніть «Переглянути».</div></div>
+  <div class="card" style="margin-top:18px"><h3>Скарги · модерація</h3><div style="max-height:480px;overflow:auto"><table><tr><th>#</th><th>Орган</th><th>Статус</th><th>Модерація</th><th>Дата</th><th></th></tr>${d.complaints.map(c => `<tr><td>${c.id}</td><td>${esc(fname(c.faction_id) || '—')}</td><td>${esc(c.status)}</td><td>${c.mod_status ? MOD[c.mod_status] + `<div class="meta">${esc(c.mod_by || '')}</div>` : '—'}</td><td>${dt(c.created_at)}</td><td><button class="btn gh sm" onclick="admView('complaint',${c.id})">Переглянути</button> <button class="btn sm red" onclick="admMod(${c.id},'abuse')">Зловживання</button> <button class="btn sm" onclick="admMod(${c.id},'valid')">Обґрунтована</button> <button class="btn gh sm" onclick="admMod(${c.id},'closed')">Закрити</button></td></tr>`).join('') || '<tr><td colspan=6 class="meta">Порожньо</td></tr>'}</table></div></div>
+  <div class="card" style="margin-top:18px"><h3>Гравці (лише читання)</h3><div style="max-height:360px;overflow:auto"><table><tr><th>Гравець</th><th>Фракція</th><th>Ранг</th><th>Статус</th><th></th></tr>${d.users.map(u => `<tr><td><b>${esc(u.name)}</b></td><td>${esc(fname(u.faction_id))}</td><td>${u.rank}</td><td>${esc(u.status)}</td><td><button class="btn gh sm" onclick="admView('user',${u.id})">Переглянути</button></td></tr>`).join('')}</table></div></div>
+  <div class="card" style="margin-top:18px"><h3>Журнал переглядів</h3><div style="max-height:300px;overflow:auto"><table><tr><th>Адмін</th><th>Обʼєкт</th><th>Причина</th><th>Час</th></tr>${d.views.map(v => `<tr><td>${esc(v.admin_name)}</td><td>${esc(v.kind)} #${v.target_id}</td><td>${esc(v.reason)}</td><td>${dt(v.created_at)}</td></tr>`).join('') || '<tr><td colspan=4 class="meta">Порожньо</td></tr>'}</table></div></div>
   ${d.full ? `<div class="card" style="margin-top:18px"><h3>Повний журнал дій</h3><div style="max-height:520px;overflow:auto">${d.audit.map(a => `<div class="it"><span class="tag">${esc(a.action)}</span> ${esc(a.details)}<div class="meta">${esc(a.who || '')} · ${dt(a.created_at)}</div></div>`).join('')}</div></div>` : '<div class="hint">Повний журнал — з 3 рівня адміна.</div>'}`;
-  const fr = () => { const f = FN[$('#imfac').value]; $('#imrank').innerHTML = f.ranks.map((r, i) => `<option value="${i + 1}">${i + 1} · ${esc(r)}</option>`).join(''); }; $('#imfac').onchange = fr; fr();
-  $('#imf').onsubmit = async e => { e.preventDefault(); try { await api('/api/admin/impersonate', form(e.target)); await boot(); location.hash = '#/f/' + ME.user.faction_id; } catch (x) { toast(x.message); } };
 }
 
 async function route() {
   const h = location.hash.replace(/#[a-z]+$/, '') || '#/'; chrome();
   try {
     if (h === '#/login') return pageLogin();
-    if (h === '#/admin' && ME.adminAcc && !ME.imp) return await pageAdmin();
+    if (h === '#/admin' && ME.adminAcc) return await pageAdmin();
     if (h.startsWith('#/') && h.length > 2 && !ME.user) { location.hash = ME.adminAcc ? '#/admin' : '#/login'; return; }
     let m; if ((m = h.match(/^#\/f\/(\d+)/))) return await pageFaction(+m[1]);
     if (h === '#/gov') return await pageGov(); if (h === '#/oversight') return await pageOversight(); 

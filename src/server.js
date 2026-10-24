@@ -2,6 +2,7 @@
 const express = require('express'), helmet = require('helmet'), cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit'), bcrypt = require('bcryptjs'), crypto = require('crypto'), path = require('path');
 const db = require('./db'), nova = require('./nova'), CFG = require('./config');
+const BUILD = 'p86-f1-tech-2';
 const now = () => Date.now();
 const DEFAULT_FACTIONS = (process.env.FACTIONS || 'gov:Уряд:Кабінет Міністрів та Мерія,gov:СБУ:Служба безпеки України,npu:НПУ:Національна поліція,obl:Обласна поліція:Поліція області,zsu:ЗСУ:Збройні сили,moz:МОЗ:Міністерство охорони здоров\'я,dsns:ДСНС:Служба надзвичайних ситуацій,tsn:ТСН:Державне телебачення,fib:FIB:Федеральне бюро розслідувань')
   .split(',').map((s, i) => { const [k, name, descr] = s.split(':'); return { code: k === 'gov' ? (name === 'Уряд' ? 'gov' : 'sbu') : k, name, descr, overseer: k === 'gov' ? 1 : 0, sort: i }; });
@@ -19,8 +20,7 @@ const SCHEMA = (pg) => { const id = pg ? 'SERIAL PRIMARY KEY' : 'INTEGER PRIMARY
   `CREATE TABLE IF NOT EXISTS appointments(id ${id}, faction_id INTEGER NOT NULL, name TEXT NOT NULL, contact TEXT, topic TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'Очікує', demo INTEGER NOT NULL DEFAULT 0, created_at ${big} NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS wanted(id ${id}, faction_id INTEGER, name TEXT NOT NULL, reason TEXT, level INTEGER NOT NULL DEFAULT 1, active INTEGER NOT NULL DEFAULT 1, demo INTEGER NOT NULL DEFAULT 0, created_at ${big} NOT NULL)`,
   `CREATE TABLE IF NOT EXISTS audit(id ${id}, user_id INTEGER, action TEXT NOT NULL, details TEXT, created_at ${big} NOT NULL)`,
-  `CREATE TABLE IF NOT EXISTS impersonations(id ${id}, admin_id INTEGER NOT NULL, admin_name TEXT, faction_id INTEGER NOT NULL, rank INTEGER NOT NULL, reason TEXT NOT NULL,
-     started_at ${big} NOT NULL, ended_at ${big}, end_reason TEXT, session_hash TEXT)`,
+  `CREATE TABLE IF NOT EXISTS admin_views(id ${id}, admin_id INTEGER NOT NULL, admin_name TEXT, kind TEXT NOT NULL, target_id INTEGER, reason TEXT NOT NULL, created_at ${big} NOT NULL)`,
 ]; };
 const DEF_RANKS = ['Стажер','Молодший співробітник','Співробітник','Старший співробітник','Інспектор','Старший інспектор','Офіцер','Старший офіцер','Заступник начальника відділу','Начальник відділу','Заступник керівника','Керівник фракції'];
 
@@ -40,25 +40,19 @@ async function loadF() { F = {}; for (const f of await db.all('SELECT * FROM fac
 async function auth(q, r, next) {
   const t = q.cookies.sp; if (t) { const s = await db.get('SELECT * FROM sessions WHERE token_hash=? AND expires_at>?', [sha(t), now()]);
     if (s) { const u = await db.get("SELECT * FROM users WHERE id=? AND status='active'", [s.user_id]); if (u) { q.sh = sha(t); q.real = u; q.u = u;
-      if (u.is_admin) { // адмін не має RP-ролі; у порталі — лише тех. панель або перегляд «як роль» (read-only)
-        q.u = { ...u, faction_id: null, rank: 0, role: 'admin' };
-        const im = await db.get('SELECT * FROM impersonations WHERE session_hash=? AND ended_at IS NULL ORDER BY id DESC', [q.sh]);
-        if (im) { if (now() - im.started_at > CFG.IMPERSONATE_MINUTES * 60e3) await endImp(im, 'timeout');
-          else { q.imp = im; q.u = { ...u, faction_id: im.faction_id, rank: im.rank, role: im.rank >= 10 ? 'leader' : 'member', is_admin: 0 }; } } } } } }
+      if (u.is_admin) q.u = { ...u, faction_id: null, rank: 0, role: 'admin' }; // адмін без RP-ролі: лише тех. панель
+    } } }
   next();
 }
-async function endImp(im, why) { await db.run('UPDATE impersonations SET ended_at=?, end_reason=? WHERE id=? AND ended_at IS NULL', [now(), why, im.id]);
-  await audit(im.admin_id, 'admin.impersonate.stop', `#${im.id} ${F[im.faction_id] ? F[im.faction_id].name : im.faction_id}, ранг ${im.rank} — ${why}`); }
 app.use((q, r, n) => auth(q, r, n).catch(n));
 // Режим перегляду адміна і read-only веб-порталу: жодних змін даних
-const RW_OK = ['/api/login', '/api/login/game', '/api/login/char', '/api/logout', '/api/internal/nova-url', '/api/admin/impersonate', '/api/admin/impersonate/stop'];
+const RW_OK = ['/api/login', '/api/login/game', '/api/login/char', '/api/logout', '/api/internal/nova-url', '/api/admin/moderate'];
 app.use('/api', (q, r, n) => { if (q.method === 'GET' || RW_OK.includes(q.path === '/' ? q.baseUrl : q.baseUrl + q.path)) return n();
-  if (q.imp) return r.status(403).json({ error: 'Режим перегляду адміна: зміни заборонені' });
   if (CFG.WEB_READ_ONLY) return r.status(403).json({ error: 'Веб-портал працює лише для читання. Дії — у Держпорталі в грі' });
   n(); });
 // --- hierarchy ---
 const isAdmin = () => false; // адмін не має доступу до фракцій як учасник (лише через перегляд «як роль»)
-const realAdmin = q => !!(q.real && q.real.is_admin && !q.imp);
+const realAdmin = q => !!(q.real && q.real.is_admin);
 const isOverseer = u => u && F[u.faction_id] && F[u.faction_id].overseer && (u.role === 'leader' || u.rank >= 9);
 const canView = (u, fid) => isAdmin(u) || (u && F[u.faction_id] && F[u.faction_id].overseer) || (u && u.faction_id === fid);
 const isLeaderOf = (u, fid) => u && u.faction_id === fid && (u.role === 'leader' || u.rank >= 11);
@@ -93,10 +87,10 @@ nova.mount(app, lim, H, { db, deny: 'Доступ лише для працівн
     const id = ex ? ex.id : (await db.run("INSERT INTO users(login,pass_hash,name,static_id,faction_id,rank,role,is_admin,admin_level,created_at) VALUES(?,'!nova',?,?,?,?,?,?,?,?)", [login, name, String(c ? c.id : ''), fid, rank, role, admin ? 1 : 0, admin ? acc.admin_level : 0, now()])).id;
     if (admin) await db.run("UPDATE users SET status='fired' WHERE login=? AND id<>?", ['nova#a' + acc.id, id]);
     await audit(id, 'login.game', admin ? `${acc.login} → адмін-панель (рівень ${acc.admin_level})` : `${acc.login} → ${name}, ${F[fid].name}, ранг ${rank}`); return id; } });
-app.post('/api/logout', H(async (q, r) => { if (q.imp) await endImp(q.imp, 'logout'); if (q.cookies.sp) await db.run('DELETE FROM sessions WHERE token_hash=?', [sha(q.cookies.sp)]); r.clearCookie('sp'); r.json({ ok: 1 }); }));
+app.post('/api/logout', H(async (q, r) => { if (q.cookies.sp) await db.run('DELETE FROM sessions WHERE token_hash=?', [sha(q.cookies.sp)]); r.clearCookie('sp'); r.json({ ok: 1 }); }));
 app.get('/api/me', (q, r) => r.json({ user: q.u && q.u.faction_id ? pub(q.u) : null, adminAcc: q.real && q.real.is_admin ? { name: q.real.name, level: q.real.admin_level } : null,
-  imp: q.imp ? { id: q.imp.id, faction_id: q.imp.faction_id, rank: q.imp.rank, reason: q.imp.reason, until: q.imp.started_at + CFG.IMPERSONATE_MINUTES * 60e3 } : null,
-  readOnly: CFG.WEB_READ_ONLY, config: { appealSlaHours: CFG.APPEAL_SLA_HOURS, petitionThreshold: CFG.PETITION_THRESHOLD, petitionTarget: CFG.PETITION_TARGET, courtMode: CFG.COURT_MODE }, overseer: !!isOverseer(q.u), overseerView: !!(q.u && F[q.u.faction_id] && F[q.u.faction_id].overseer), admin: isAdmin(q.u),
+  build: BUILD,
+  readOnly: CFG.WEB_READ_ONLY, config: { appealSlaHours: CFG.APPEAL_SLA_HOURS, petitionThreshold: CFG.PETITION_THRESHOLD, petitionTarget: CFG.PETITION_TARGET, courtMode: CFG.COURT_MODE, adminOffDutyMode: CFG.ADMIN_OFF_DUTY_MODE }, overseer: !!isOverseer(q.u), overseerView: !!(q.u && F[q.u.faction_id] && F[q.u.faction_id].overseer), admin: isAdmin(q.u),
   leader: !!(q.u && isLeaderOf(q.u, q.u.faction_id)), factions: Object.values(F).map(f => ({ id: f.id, code: f.code, name: f.name, descr: f.descr, overseer: f.overseer, ranks: f.ranks })) }));
 
 // --- public citizens' layer ---
@@ -197,33 +191,39 @@ app.get('/api/oversight', H(async (q, r) => { if (!need(q, r)) return;
   r.json({ factions: await db.all("SELECT f.id,f.name,(SELECT COUNT(*) FROM users u WHERE u.faction_id=f.id AND u.status='active') members,(SELECT COUNT(*) FROM complaints c WHERE c.faction_id=f.id AND c.status='Нова') complaints,(SELECT COUNT(*) FROM requests x WHERE x.to_f=f.id AND x.status='Нова') requests FROM factions f ORDER BY f.sort"),
     log: await db.all("SELECT a.*,u.name who FROM audit a LEFT JOIN users u ON u.id=a.user_id WHERE a.action LIKE 'member.%' ORDER BY a.id DESC LIMIT 60") }); }));
 // --- admin ---
-app.get('/api/admin', H(async (q, r) => { if (!realAdmin(q)) return r.status(403).json({ error: 'Лише адміністратор порталу (поза режимом перегляду)' });
+const adm = (q, r) => { if (realAdmin(q)) return true; r.status(403).json({ error: 'Лише адміністратор' }); return false; };
+// Тех. панель адміна: модерація скарг/зловживань і журнали. Жодних RP-дій.
+app.get('/api/admin', H(async (q, r) => { if (!adm(q, r)) return;
   const full = (q.real.admin_level || 0) >= CFG.AUDIT_FULL_ADMIN_LEVEL;
-  r.json({ full, impersonations: await db.all('SELECT id,admin_id,admin_name,faction_id,rank,reason,started_at,ended_at,end_reason FROM impersonations ORDER BY id DESC LIMIT 200'),
-    stats: { users: (await db.get("SELECT COUNT(*) n FROM users WHERE status='active' AND is_admin=0")).n, complaints: (await db.get("SELECT COUNT(*) n FROM complaints WHERE status='Нова'")).n, requests: (await db.get("SELECT COUNT(*) n FROM requests WHERE status='Нова'")).n },
-    users: await db.all('SELECT id,login,name,static_id,faction_id,rank,role,status,demo FROM users ORDER BY faction_id,rank DESC'), audit: full ? await db.all('SELECT a.*,u.name who FROM audit a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200') : [] }); }));
-app.post('/api/admin/impersonate', lim, H(async (q, r) => { if (!realAdmin(q)) return r.status(403).json({ error: 'Лише адміністратор (спершу завершіть поточний перегляд)' });
-  const fid = +q.body.faction_id, f = F[fid], rank = Math.trunc(+q.body.rank), reason = String(q.body.reason || '').trim().slice(0, 300);
-  if (!f || !(rank >= 1 && rank <= f.ranks.length)) return r.status(400).json({ error: 'Оберіть фракцію і ранг' });
-  if (reason.length < 5) return r.status(400).json({ error: 'Вкажіть причину (від 5 символів)' });
-  const x = await db.run('INSERT INTO impersonations(admin_id,admin_name,faction_id,rank,reason,started_at,session_hash) VALUES(?,?,?,?,?,?,?)', [q.real.id, q.real.name, fid, rank, reason, now(), q.sh]);
-  await audit(q.real.id, 'admin.impersonate.start', `#${x.id} ${f.name}, ранг ${rank}. Причина: ${reason}`); r.json({ ok: 1 }); }));
-app.post('/api/admin/impersonate/stop', H(async (q, r) => { if (!q.imp) return r.json({ ok: 1 }); await endImp(q.imp, 'manual'); r.json({ ok: 1 }); }));
-app.post('/api/admin/user', H(async (q, r) => { if (!realAdmin(q)) return r.status(403).json({ error: 'Лише адміністратор' }); const b = q.body;
-  const u = await db.get('SELECT * FROM users WHERE id=?', [+b.id]); if (!u) return r.status(404).json({ error: 'Немає' });
-  const role = ['member', 'leader'].includes(b.role) ? b.role : u.role, st = ['active', 'fired'].includes(b.status) ? b.status : u.status;
-  await db.run('UPDATE users SET faction_id=?,rank=?,role=?,status=? WHERE id=?', [F[+b.faction_id] ? +b.faction_id : u.faction_id, Math.max(1, Math.min(12, +b.rank || u.rank)), role, st, u.id]);
-  if (b.password) await db.run('UPDATE users SET pass_hash=? WHERE id=?', [bcrypt.hashSync(String(b.password), 10), u.id]);
-  await audit(q.u.id, 'admin.user', `${u.login}: ф=${b.faction_id} р=${b.rank} роль=${role} статус=${st}`); r.json({ ok: 1 }); }));
-app.post('/api/admin/faction', H(async (q, r) => { if (!realAdmin(q)) return r.status(403).json({ error: 'Лише адміністратор' }); const b = q.body;
-  const ranks = Array.isArray(b.ranks) && b.ranks.length >= 3 ? JSON.stringify(b.ranks.map(String).slice(0, 15)) : null;
-  if (b.id) await db.run('UPDATE factions SET name=?,descr=?,overseer=?,ranks=? WHERE id=?', [b.name, b.descr || '', b.overseer ? 1 : 0, ranks, +b.id]);
-  else { if (!b.code || !b.name) return r.status(400).json({ error: 'Код і назва' }); await db.run('INSERT INTO factions(code,name,descr,overseer,sort,ranks) VALUES(?,?,?,?,?,?)', [b.code, b.name, b.descr || '', b.overseer ? 1 : 0, 99, ranks]); }
-  await loadF(); await audit(q.u.id, 'admin.faction', b.name); r.json({ ok: 1 }); }));
+  r.json({ full, stats: { users: (await db.get("SELECT COUNT(*) n FROM users WHERE status='active' AND is_admin=0")).n, complaints: (await db.get("SELECT COUNT(*) n FROM complaints WHERE status='Нова'")).n, abuse: (await db.get("SELECT COUNT(*) n FROM complaints WHERE mod_status='abuse'")).n },
+    complaints: await db.all('SELECT id,faction_id,status,mod_status,mod_by,mod_at,created_at,SUBSTR(body,1,80) preview FROM complaints ORDER BY id DESC LIMIT 200'),
+    users: await db.all('SELECT id,name,faction_id,rank,status FROM users WHERE is_admin=0 ORDER BY id DESC LIMIT 300'),
+    views: await db.all('SELECT * FROM admin_views ORDER BY id DESC LIMIT 200'),
+    audit: full ? await db.all('SELECT a.*,u.name who FROM audit a LEFT JOIN users u ON u.id=a.user_id ORDER BY a.id DESC LIMIT 200') : [] }); }));
+// Перегляд даних для розбору репорту: лише читання, кожен перегляд — у журнал admin_views + audit
+app.get('/api/admin/view', H(async (q, r) => { if (!adm(q, r)) return;
+  const kind = q.query.kind, id = +q.query.id, reason = String(q.query.reason || '').trim().slice(0, 300);
+  if (!['complaint', 'user'].includes(kind) || !(id > 0)) return r.status(400).json({ error: 'Невірний запит' });
+  if (reason.length < 5) return r.status(400).json({ error: 'Вкажіть причину перегляду (№ репорту, від 5 символів)' });
+  const data = kind === 'complaint' ? await db.get('SELECT * FROM complaints WHERE id=?', [id])
+    : await db.get('SELECT id,login,name,static_id,faction_id,rank,role,status,created_at FROM users WHERE id=? AND is_admin=0', [id]);
+  if (!data) return r.status(404).json({ error: 'Не знайдено' });
+  if (kind === 'user') data.docs = await db.all('SELECT id,kind,title,access,created_at FROM docs WHERE author_id=? ORDER BY id DESC LIMIT 50', [id]);
+  await db.run('INSERT INTO admin_views(admin_id,admin_name,kind,target_id,reason,created_at) VALUES(?,?,?,?,?,?)', [q.real.id, q.real.name, kind, id, reason, now()]);
+  await audit(q.real.id, 'admin.view', `${kind} #${id}: ${reason}`); r.json({ data, readOnly: true }); }));
+// Модерація скарг: позначити зловживання / обґрунтована / закрито — з обов'язковою приміткою
+app.post('/api/admin/moderate', H(async (q, r) => { if (!adm(q, r)) return;
+  const id = +q.body.id, st = String(q.body.mod_status || ''), note = String(q.body.note || '').trim().slice(0, 500);
+  if (!['abuse', 'valid', 'closed'].includes(st)) return r.status(400).json({ error: 'Невірний статус' });
+  if (note.length < 5) return r.status(400).json({ error: 'Примітка обовʼязкова (від 5 символів)' });
+  const c = await db.get('SELECT id FROM complaints WHERE id=?', [id]); if (!c) return r.status(404).json({ error: 'Не знайдено' });
+  await db.run('UPDATE complaints SET mod_status=?,mod_note=?,mod_by=?,mod_at=? WHERE id=?', [st, note, q.real.name, now(), id]);
+  await audit(q.real.id, 'admin.moderate', `скарга #${id} → ${st}: ${note}`); r.json({ ok: 1 }); }));
 app.get('*', (q, r) => r.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
 
 async function migrate() { // P86/Ф1: адмін — окремий прапорець, без RP-ролі
   for (const c of ['is_admin INTEGER NOT NULL DEFAULT 0', 'admin_level INTEGER NOT NULL DEFAULT 0']) { try { await db.run(`ALTER TABLE users ADD COLUMN ${db.isPg ? 'IF NOT EXISTS ' : ''}${c}`); } catch {} }
+  for (const c of ['mod_status TEXT', 'mod_note TEXT', 'mod_by TEXT', 'mod_at BIGINT']) { try { await db.run(`ALTER TABLE complaints ADD COLUMN ${db.isPg ? 'IF NOT EXISTS ' : ''}${c}`); } catch (e) {} }
   await db.run("UPDATE users SET is_admin=1, admin_level=CASE WHEN admin_level>0 THEN admin_level ELSE 3 END, role='member', faction_id=NULL WHERE role='admin'");
 }
 async function seed() { await migrate();
