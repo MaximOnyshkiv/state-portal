@@ -11,13 +11,18 @@ const rankName = (fid, r) => (FN[fid] && FN[fid].ranks[r - 1]) || ('Ранг ' +
 const roleTag = u => u.role === 'admin' ? '<span class="tag y">Адмін</span>' : u.role === 'leader' ? '<span class="tag y">Лідер</span>' : '<span class="tag">Співробітник</span>';
 const fopts = (sel, excl) => Object.values(FN).filter(f => f.id !== excl).map(f => `<option value="${f.id}" ${f.id == sel ? 'selected' : ''}>${esc(f.name)}</option>`).join('');
 
+function banner() { let b = $('#impbar'); if (!ME.imp) { if (b) b.remove(); return; }
+  if (!b) { b = document.createElement('div'); b.id = 'impbar'; b.style.cssText = 'position:sticky;top:0;z-index:99;background:#b3261e;color:#fff;padding:8px 16px;font-weight:700;text-align:center'; document.body.prepend(b); }
+  b.innerHTML = `РЕЖИМ АДМІНА · перегляд як ${esc(fname(ME.imp.faction_id))}, ранг ${ME.imp.rank} · лише читання · до ${new Date(ME.imp.until).toLocaleTimeString('uk-UA', { timeStyle: 'short' })} <button class="btn sm" onclick="impStop()">Завершити</button>`; }
+async function impStop() { try { await api('/api/admin/impersonate/stop', {}); } catch (x) { toast(x.message); } await boot(); location.hash = '#/admin'; route(); }
 function chrome() {
-  const u = ME.user, h = location.hash;
+  const u = ME.user, h = location.hash; banner();
+  if (ME.adminAcc && !ME.imp) { $('#links').innerHTML = `<a href="#/">Громадянам</a><a class="acc" href="#/admin">Адмін-панель</a>`; $('#ws').hidden = false;
+    $('#wsin').innerHTML = `<span class="eb">Адмін-панель порталу</span><a href="#/admin" class="on">Модерація і журнали</a><span class="who">${esc(ME.adminAcc.name)} · адмін ${ME.adminAcc.level} <button class="btn gh sm" onclick="logout()">Вийти</button></span>`; return; }
   $('#links').innerHTML = `<a href="#/" class="${h === '#/' || !h ? 'on' : ''}">Громадянам</a><a href="#/#wanted">Розшук</a><a href="#/#appeal">Звернення</a>` + (u ? `<a class="acc" href="#/f/${u.faction_id}">Кабінет</a>` : `<a class="acc" href="#/login">Вхід для службовців</a>`);
   $('#ws').hidden = !u; if (!u) return;
   const L = [[`#/f/${u.faction_id}`, 'Моя фракція'], ['#/gov', 'Міжвідомча взаємодія']];
   if (ME.overseerView || ME.admin) L.push(['#/oversight', 'Нагляд']);
-  if (ME.admin) L.push(['#/admin', 'Адмінпанель']);
   $('#wsin').innerHTML = `<span class="eb">${esc(fname(u.faction_id))}</span>` + L.map(([a, t]) => `<a href="${a}" class="${h.startsWith(a) ? 'on' : ''}">${t}</a>`).join('') +
     `<span class="who">${esc(u.name)} · ${esc(rankName(u.faction_id, u.rank))} ${roleTag(u)} <button class="btn gh sm" onclick="logout()">Вийти</button></span>`;
 }
@@ -39,7 +44,7 @@ async function pagePublic() {
 }
 async function pageLogin() {
   let m = { nova: false, local: true }; try { m = await (await fetch('/api/auth/mode')).json(); } catch {}
-  const done = async () => { await boot(); location.hash = '#/f/' + ME.user.faction_id; };
+  const done = async () => { await boot(); location.hash = ME.user ? '#/f/' + ME.user.faction_id : '#/admin'; };
   const game = `<form class="card login" id="gf"><div class="veb">Кабінет службовця</div><h1 class="vh" style="font-size:28px">Вхід через NovaRP</h1><label>Ігровий логін</label><input name="login" autocomplete="username" required><label>Пароль від гри</label><input name="password" type="password" autocomplete="current-password" required><button class="btn" style="width:100%">Увійти</button><div class="hint">Доступ і ранг підтягуються з гри автоматично при кожному вході.</div></form>`;
   const local = `<form class="card login" id="lf" ${m.nova ? 'style="margin-top:18px"' : ''}><div class="veb">${m.nova ? 'Службовий вхід' : 'Кабінет службовця'}</div><h1 class="vh" style="font-size:${m.nova ? 20 : 28}px">${m.nova ? 'Локальний акаунт' : 'Вхід'}</h1><label>Логін</label><input name="login" autocomplete="username"><label>Пароль</label><input name="password" type="password"><button class="btn ${m.nova ? 'gh' : ''}" style="width:100%">Увійти</button>${m.nova ? '' : '<div class="hint">Демо: demo_gov, demo_sbu, demo_npu_lead, demo_npu, demo_admin — пароль demo1234.</div>'}</form>`;
   app.innerHTML = (m.nova ? game : '') + (m.local || !m.nova ? local : `<details style="max-width:420px;margin:14px auto"><summary class="meta">Службовий вхід</summary>${local}</details>`);
@@ -95,22 +100,26 @@ async function pageOversight() {
    <div class="card" style="margin-top:18px"><h3>Журнал кадрових рішень</h3>${d.log.map(a => `<div class="it"><span class="tag ${a.action === 'member.fire' ? 'secret' : 'y'}">${{ 'member.fire': 'Звільнення', 'member.hire': 'Прийом', 'member.rank': 'Ранг' }[a.action]}</span> ${esc(a.details)}<div class="meta">${esc(a.who || '')} · ${dt(a.created_at)}</div></div>`).join('') || '<div class="meta">Порожньо</div>'}</div>`;
 }
 async function pageAdmin() {
-  const d = await api('/api/admin');
-  app.innerHTML = `<div class="veb">Адміністрування</div><h1 class="vh">Адмінпанель порталу</h1>
-  <div class="card" style="margin-top:22px"><h3>Користувачі · ${d.users.length}</h3><table><tr><th>Користувач</th><th>Фракція</th><th>Ранг</th><th>Роль</th><th>Статус</th><th></th></tr>${d.users.map(u => `<tr id="u${u.id}"><td><b>${esc(u.name)}</b><div class="meta">${esc(u.login)}</div></td><td><select name="faction_id">${fopts(u.faction_id)}</select></td><td><input name="rank" type="number" min="1" max="12" value="${u.rank}" style="width:70px"></td><td><select name="role">${['member', 'leader', 'admin'].map(r => `<option ${r === u.role ? 'selected' : ''}>${r}</option>`).join('')}</select></td><td><select name="status">${['active', 'fired'].map(r => `<option ${r === u.status ? 'selected' : ''}>${r}</option>`).join('')}</select></td><td><button class="btn sm" onclick="saveU(${u.id})">Зберегти</button></td></tr>`).join('')}</table></div>
-  <div class="grid g2" style="margin-top:18px"><form class="card" id="ff"><h3>Фракції (додати / змінити)</h3><label>Фракція</label><select name="id"><option value="">+ Нова</option>${fopts()}</select><label>Код (для нової)</label><input name="code"><label>Назва</label><input name="name"><label>Опис</label><input name="descr"><label>Ранги через кому (порожньо = стандартні 12)</label><input name="ranks"><label><input type="checkbox" name="overseer" style="width:auto"> Наглядовий орган (як Уряд/СБУ)</label><br><button class="btn">Зберегти фракцію</button></form>
-  <div class="card"><h3>Журнал дій</h3><div style="max-height:520px;overflow:auto">${d.audit.map(a => `<div class="it"><span class="tag">${esc(a.action)}</span> ${esc(a.details)}<div class="meta">${esc(a.who || '')} · ${dt(a.created_at)}</div></div>`).join('')}</div></div></div>`;
-  $('#ff').onsubmit = async e => { e.preventDefault(); const b = form(e.target); b.ranks = b.ranks ? b.ranks.split(',').map(s => s.trim()).filter(Boolean) : null; b.overseer = !!b.overseer; if (b.id && !b.name) b.name = FN[b.id].name; try { await api('/api/admin/faction', b); await boot(); toast('Збережено'); route(); } catch (x) { toast(x.message); } };
+  const d = await api('/api/admin'), END = { manual: 'вручну', timeout: 'тайм-аут', logout: 'вихід' };
+  app.innerHTML = `<div class="veb">Адміністрування · без RP-ролі</div><h1 class="vh">Адмін-панель порталу</h1>
+  <p class="sub">Адмін не є учасником фракцій. Перегляд «як роль» — лише для перевірки й налагодження: тільки читання, ${15} хв, кожен вхід і вихід пишеться в журнал.${ME.readOnly ? ' Веб-портал зараз у режимі лише читання.' : ''}</p>
+  <div class="grid g3" style="margin-top:18px"><div class="card"><h4>Співробітників</h4><b>${d.stats.users}</b></div><div class="card"><h4>Нових скарг</h4><b>${d.stats.complaints}</b></div><div class="card"><h4>Нових запитів</h4><b>${d.stats.requests}</b></div></div>
+  <div class="grid g2" style="margin-top:18px"><form class="card" id="imf"><h3>Переглянути як роль</h3><label>Фракція</label><select name="faction_id" id="imfac">${fopts()}</select><label>Ранг</label><select name="rank" id="imrank"></select><label>Причина (обов'язково)</label><input name="reason" required minlength="5" placeholder="напр. скарга №…, перевірка бага"><button class="btn red">Почати перегляд</button></form>
+  <div class="card"><h3>Журнал переглядів «як роль»</h3><div style="max-height:420px;overflow:auto"><table><tr><th>Адмін</th><th>Роль</th><th>Причина</th><th>Початок</th><th>Кінець</th></tr>${d.impersonations.map(i => `<tr><td>${esc(i.admin_name)}</td><td>${esc(fname(i.faction_id))}, ${i.rank}</td><td>${esc(i.reason)}</td><td>${dt(i.started_at)}</td><td>${i.ended_at ? dt(i.ended_at) + ' · ' + (END[i.end_reason] || esc(i.end_reason)) : '<span class="tag secret">триває</span>'}</td></tr>`).join('') || '<tr><td colspan=5 class="meta">Порожньо</td></tr>'}</table></div></div></div>
+  <div class="card" style="margin-top:18px"><h3>Користувачі · ${d.users.length}</h3><table><tr><th>Користувач</th><th>Фракція</th><th>Ранг</th><th>Роль</th><th>Статус</th></tr>${d.users.map(u => `<tr><td><b>${esc(u.name)}</b><div class="meta">${esc(u.login)}</div></td><td>${esc(fname(u.faction_id))}</td><td>${u.rank}</td><td>${esc(u.role)}</td><td>${esc(u.status)}</td></tr>`).join('')}</table><div class="hint">Фракція й ранг підтягуються з гри; змінювати їх тут не можна.</div></div>
+  ${d.full ? `<div class="card" style="margin-top:18px"><h3>Повний журнал дій</h3><div style="max-height:520px;overflow:auto">${d.audit.map(a => `<div class="it"><span class="tag">${esc(a.action)}</span> ${esc(a.details)}<div class="meta">${esc(a.who || '')} · ${dt(a.created_at)}</div></div>`).join('')}</div></div>` : '<div class="hint">Повний журнал — з 3 рівня адміна.</div>'}`;
+  const fr = () => { const f = FN[$('#imfac').value]; $('#imrank').innerHTML = f.ranks.map((r, i) => `<option value="${i + 1}">${i + 1} · ${esc(r)}</option>`).join(''); }; $('#imfac').onchange = fr; fr();
+  $('#imf').onsubmit = async e => { e.preventDefault(); try { await api('/api/admin/impersonate', form(e.target)); await boot(); location.hash = '#/f/' + ME.user.faction_id; } catch (x) { toast(x.message); } };
 }
-async function saveU(id) { const r = $('#u' + id), b = { id }; r.querySelectorAll('[name]').forEach(i => b[i.name] = i.value); try { await api('/api/admin/user', b); toast('Збережено'); } catch (x) { toast(x.message); } }
 
 async function route() {
   const h = location.hash.replace(/#[a-z]+$/, '') || '#/'; chrome();
   try {
     if (h === '#/login') return pageLogin();
-    if (h.startsWith('#/') && h.length > 2 && !ME.user) { location.hash = '#/login'; return; }
+    if (h === '#/admin' && ME.adminAcc && !ME.imp) return await pageAdmin();
+    if (h.startsWith('#/') && h.length > 2 && !ME.user) { location.hash = ME.adminAcc ? '#/admin' : '#/login'; return; }
     let m; if ((m = h.match(/^#\/f\/(\d+)/))) return await pageFaction(+m[1]);
-    if (h === '#/gov') return await pageGov(); if (h === '#/oversight') return await pageOversight(); if (h === '#/admin') return await pageAdmin();
+    if (h === '#/gov') return await pageGov(); if (h === '#/oversight') return await pageOversight(); 
     await pagePublic(); if (location.hash.includes('#wanted') || location.hash.includes('#appeal')) document.getElementById(location.hash.split('#').pop())?.scrollIntoView();
   } catch (x) { app.innerHTML = `<div class="card"><h3>Немає доступу</h3><div class="sub">${esc(x.message)}</div></div>`; }
 }
